@@ -1,0 +1,22 @@
+{
+  "combined_detector": {
+    "flag_key": "flagged_prompt_and_answer",
+    "tp": 7,
+    "fp": 0,
+    "tn": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "n_evaluated": 7
+  },
+  "prompt_only_ablation": {
+    "flag_key": "flagged_prompt_only",
+    "tp": 0,
+    "fp": 0,
+    "tn": 0,
+    "fn": 7,
+    "precision": 0.0,
+    "recall": 0.0,
+    "n_evaluated": 7
+  }
+}

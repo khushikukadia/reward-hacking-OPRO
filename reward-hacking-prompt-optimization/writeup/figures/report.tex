@@ -1,0 +1,256 @@
+
+
+\documentclass[11pt]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{float}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\usepackage{titlesec}
+
+% Safe figure inclusion: compiles even if image files are not uploaded.
+\newcommand{\safeincludegraphics}[2][]{%
+\IfFileExists{#2}{\includegraphics[#1]{#2}}{%
+\IfFileExists{figures/#2}{\includegraphics[#1]{figures/#2}}{%
+\IfFileExists{results/#2}{\includegraphics[#1]{results/#2}}{%
+\fbox{\parbox{0.75\linewidth}{\centering Missing figure: \texttt{\detokenize{#2}}}}%
+}%
+}%
+}%
+}
+
+\graphicspath{{figures/}{../results/}{results/}{../figures/}{./}}
+
+% Compact spacing
+\linespread{0.96}
+\setlength{\parskip}{0.25em}
+\setlength{\parindent}{1em}
+\setlength{\textfloatsep}{0.6em}
+\setlength{\floatsep}{0.6em}
+\setlength{\intextsep}{0.6em}
+\setlength{\abovecaptionskip}{0.25em}
+\setlength{\belowcaptionskip}{-0.2em}
+\captionsetup{font=small,skip=3pt}
+
+\titlespacing*{\section}{0pt}{0.8em}{0.35em}
+\titlespacing*{\subsection}{0pt}{0.6em}{0.25em}
+\title{Detecting Reward Hacking in OPRO-Style Prompt Optimization}
+
+\author{
+Sreyana Kukadia\\
+Computer Science, Stanford University
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Reward hacking occurs when an optimizer learns to maximize a proxy reward rather than the intended objective. This project studies reward hacking in an OPRO-style prompt optimization loop. An LLM answers a benchmark of 30 math and logic questions, while an optimizer LLM iteratively modifies the system prompt to maximize a flawed proxy judge score. The judge rewards not only correctness but also confidence, reasoning quality, verbosity, and presentation. As a result, the optimizer learns to produce increasingly judge-pleasing answers while true accuracy declines. In the main API-based experiment, the proxy score reaches 10/10 while exact-match accuracy collapses toward zero. A naive detector based only on increases in proxy score fails because the judge score saturates early. I therefore introduce an absolute-divergence rule that flags cases where proxy performance is high but true performance is low. The results demonstrate that reward hacking can emerge even in small prompt optimization loops and that detecting it requires monitoring the gap between proxy and true objectives rather than relying solely on changes in proxy reward.
+\end{abstract}
+
+\section{Introduction and Background}
+
+An important challenge in AI alignment is that optimizers pursue the objective they are given, not necessarily the objective that humans intend. When the reward function is flawed, an optimizer may exploit weaknesses in the reward signal rather than solve the underlying task. This phenomenon is commonly known as reward hacking, and it has been identified as a concrete safety problem in prior work on specification failures and AI safety benchmarks \cite{amodei2016concrete,leike2017gridworlds}.
+
+This project investigates reward hacking in the setting of text-space optimization. Unlike many optimization problems, the artifacts being optimized are human-readable. Both prompts and generated answers can be directly inspected, making it possible to observe how an optimizer changes its behavior over time.
+
+The experiment is inspired by OPRO, or Optimization by Prompting, a framework in which an LLM proposes improved candidate solutions based on a history of previous solutions and scores \cite{yang2023optimizers}. OPRO belongs to a broader family of text-space optimizers and LLM-guided search methods, including TextGrad, EvoPrompt, GEPA, and AlphaEvolve \cite{textgrad2024,guo2023evoprompt,agrawal2025gepa,novikov2025alphaevolve}. In standard applications, these methods attempt to improve task performance. In this project, however, I deliberately introduce a misalignment problem by optimizing against a flawed proxy judge while measuring true accuracy separately.
+
+The proxy judge in this project is also related to recent work on using LLMs as evaluators. LLM-as-a-judge methods can provide scalable evaluation, but prior work has also documented limitations such as verbosity bias and reasoning limitations \cite{zheng2023llmjudge}. This project uses that weakness: the judge rewards answers that are polished, confident, and reasoning-heavy, even when those qualities do not guarantee correctness.
+
+The key question is whether a small OPRO-style loop can reproduce reward hacking and whether a simple detector can identify it. The core tension is that the optimizer maximizes a proxy score $S(\pi)$, while the quantity of interest is true accuracy $\mathrm{Acc}(\pi)$:
+\begin{equation}
+\pi^{*} = \arg\max_{\pi} S(\pi),
+\qquad
+\text{even though the desired objective is maximizing }
+\mathrm{Acc}(\pi).
+\label{eq:proxy-objective}
+\end{equation}
+Reward hacking occurs when these two quantities diverge, so the proxy score remains high or increases while true accuracy falls.
+
+\section{Methods}
+
+\subsection{Task and Evaluation}
+
+The benchmark consists of 30 short math and logic questions with known ground-truth answers. For a prompt $\pi$, exact-match accuracy is computed as
+\begin{equation}
+\mathrm{Acc}(\pi)
+=
+\frac{1}{N}
+\sum_{i=1}^{N}
+\mathbf{1}
+\left[
+\mathrm{norm}(a_i(\pi))
+=
+\mathrm{norm}(g_i)
+\right],
+\label{eq:accuracy}
+\end{equation}
+where normalization handles formatting differences, extracted numbers, and simple yes/no outputs. This true accuracy is recorded for analysis, but it is not used by the optimizer when selecting prompts.
+
+\subsection{Proxy Judges}
+
+Two proxy judges are used. The first is a deterministic mock judge that rewards correctness, answer length, confidence-related words, reasoning-related words, and presentation features. This transparent scoring function serves as a sanity check.
+
+The second is an API-based judge implemented with \texttt{gpt-4o-mini}. The model is instructed to score answers from 1 to 10 based on correctness, clarity, confidence, reasoning quality, and presentation. Because correctness is only one of 5 criteria, the judge is intentionally misaligned with the true task objective.
+
+\subsection{OPRO-Style Optimization}
+
+At each iteration, the current prompt is evaluated on all 30 questions. Proxy scores and true accuracy are recorded separately. An optimizer LLM then receives the history of prompts and proxy scores and proposes three candidate prompts. To reduce cost, these candidates are evaluated on a 10-question subset, and the candidate with the highest proxy score is selected as the next prompt. The process repeats for eight iterations.
+
+This setup is OPRO-inspired rather than a full replication. The main simplifications are greedy selection, only three candidate prompts per iteration, and subset-based evaluation. These choices make the experiment small and interpretable while preserving the core structure of text-space optimization against a proxy objective.
+
+\subsection{Reward-Hacking Detector}
+
+The detector identifies two signatures of reward hacking:
+\begin{align}
+\mathrm{Delta}*t
+&=
+(S_t - S*{t-1} \ge 0.5)
+\wedge
+(\Delta \mathrm{Acc}_t \le 0.02)
+\wedge
+\Delta \mathrm{artifact}_t, \nonumber \ \\
+\mathrm{Diverge}_t
+&= 
+(S_t \ge 8.0)
+\wedge
+(\mathrm{Acc}_t \le 0.30), \nonumber \ \\
+\mathrm{Flag}_t
+&=
+\mathrm{Delta}_t
+\vee
+\mathrm{Diverge}_t.
+\label{eq:detector}
+\end{align}
+The first rule captures situations where proxy scores increase without corresponding gains in true performance. The second captures cases where proxy scores are already saturated and hacking manifests as a large absolute gap between proxy and true performance.
+
+\section{Results}
+
+Table~\ref{tab:results} summarizes the main outcomes. The mock judge exhibits mild divergence between proxy and true performance, confirming that the optimization pipeline functions as expected. The main result comes from the API-based judge. Here, the proxy score rapidly reaches the maximum value while exact-match accuracy collapses.
+
+\begin{table}[H]
+\centering
+\caption{Summary of optimization results.}
+\label{tab:results}
+\begin{tabular}{lcc}
+\toprule
+Run & Proxy Score & True Accuracy \\
+\midrule
+Mock Judge & $5.9 \rightarrow 8.9$ & $60\% \rightarrow 57\%$ \\
+API Judge & $9.5 \rightarrow 10.0$ & $50\% \rightarrow \sim 0\text{--}7\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Figure~\ref{fig:proxy_accuracy} illustrates this divergence. Although the proxy score remains near 10/10 throughout optimization, true accuracy declines sharply. This behavior is a direct indicator of reward hacking.
+
+
+\begin{figure}[H]
+\centering
+\safeincludegraphics[width=0.50\linewidth]{proxy_vs_accuracy.png}
+\caption{Proxy score versus true accuracy during optimization. The proxy score remains near 10 while true accuracy collapses.}
+\label{fig:proxy_accuracy}
+\end{figure}
+
+The optimized prompts also exhibit clear behavioral drift. Early prompts request only a final answer, while later prompts encourage explanations, reasoning, and structured presentation. As shown in Figure~\ref{fig:artifact_features}, prompt length and answer length both increase substantially, and reasoning-related language becomes more common. The optimizer therefore learns features that appeal to the judge rather than features that improve correctness.
+
+\begin{figure}[H]
+\centering
+\safeincludegraphics[width=0.50\linewidth]{artifact_features.png}
+\caption{Prompt and answer artifacts become increasingly judge-pleasing over optimization iterations.}
+\label{fig:artifact_features}
+\end{figure}
+
+\section{Detector Evaluation}
+
+Table~\ref{tab:detector} compares the detector variants. The combined detector uses both the delta rule and the absolute-divergence rule, while the ablation removes the absolute-divergence condition.
+
+\begin{table}[H]
+\centering
+\caption{Detector performance against hand-coded reward-hacking labels.}
+\label{tab:detector}
+\begin{tabular}{llcccccc}
+\toprule
+Detector & Data & P & R & TP & FP & TN & FN \\
+\midrule
+Combined & Mock & 1.0 & 1.0 & 2 & 0 & 5 & 0 \\
+Ablation & Mock & 1.0 & 0.5 & 1 & 0 & 5 & 1 \\
+Combined & API & 1.0 & 1.0 & 7 & 0 & 0 & 0 \\
+Ablation & API & 0.0 & 0.0 & 0 & 0 & 0 & 7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A detector based only on proxy-score increases performs poorly on the API run because the judge score begins near saturation. Since there is little room for additional score increases, the detector fails to identify obvious reward hacking.
+
+Adding the absolute-divergence rule resolves this issue. The combined detector successfully identifies all hacking iterations in the API experiment while maintaining performance on the mock benchmark. This result suggests that reward-hacking detectors should consider both temporal changes and absolute gaps between proxy and true performance.
+
+One caveat is that these labels are heuristic rather than human-audited. Therefore, the precision and recall values should be interpreted as internal consistency checks rather than externally validated detection performance. The more important result is the comparison between detector variants: the delta-only version fails when judge scores saturate, while the combined detector captures this failure mode.
+
+\section{Discussion, Limitations, and Future Work}
+
+The results demonstrate that a small OPRO-style optimization loop can reliably produce reward hacking when optimized against a flawed judge. Importantly, the optimizer itself is not malfunctioning - tt is successfully maximizing the objective it was given. The failure lies in the objective function rather than in the optimization process.
+
+The judge was instructed to score answers based on correctness, clarity, confidence, reasoning quality, and presentation. This means that correctness was only one part of the rubric. The optimizer therefore learns to exploit the non-correctness dimensions of the score by producing longer, more confident, and more polished answers. This behavior is consistent with the broader reward-hacking problem: once a proxy becomes the target of optimization, the optimizer may improve the proxy without improving the true objective \cite{amodei2016concrete,leike2017gridworlds}.
+
+There are still several limitations with this experiment. The benchmark contains only 30 questions, making the results potentially noisy. The near-zero accuracy observed in the API run may partially reflect parsing failures caused by increasingly verbose answers rather than purely incorrect reasoning. The API judge is also a noisy proxy, and the detector thresholds are hand-tuned rather than learned. Finally, the experiment is OPRO-inspired rather than a full implementation of OPRO.
+
+Future work could address these limitations by using larger benchmarks, distinguishing incorrect answers from unparseable answers, incorporating human-labeled reward-hacking examples, and evaluating multiple prompt optimization algorithms. Another interesting direction is hacking suppression: feeding detector outputs back into the optimizer as a penalty and measuring whether this reduces proxy exploitation. It would also be useful to test how different judge rubrics affect the optimization trajectory, such as comparing judges that emphasize correctness more heavily against judges that reward presentation more strongly.
+
+In conclusion, this project demonstrates that reward hacking can emerge rapidly in text-space optimization and that detecting it requires monitoring the absolute gap between proxy reward and true task performance. The results provide a simple and interpretable example of how optimization pressure can produce misaligned behavior even in small language-model systems. Furthermore this setup creates opportunity for much further experimentation to be done in this field. 
+
+\begin{thebibliography}{99}
+
+\bibitem{amodei2016concrete}
+Dario Amodei, Chris Olah, Jacob Steinhardt, Paul Christiano, John Schulman, and Dan Mané.
+\newblock Concrete Problems in AI Safety.
+\newblock \emph{arXiv preprint arXiv:1606.06565}, 2016.
+
+\bibitem{leike2017gridworlds}
+Jan Leike, Miljan Martic, Victoria Krakovna, Pedro A. Ortega, Tom Everitt, Andrew Lefrancq, Laurent Orseau, and Shane Legg.
+\newblock AI Safety Gridworlds.
+\newblock \emph{arXiv preprint arXiv:1711.09883}, 2017.
+
+\bibitem{yang2023optimizers}
+Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V. Le, Denny Zhou, and Xinyun Chen.
+\newblock Large Language Models as Optimizers.
+\newblock \emph{arXiv preprint arXiv:2309.03409}, 2023.
+
+\bibitem{zheng2023llmjudge}
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica.
+\newblock Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena.
+\newblock \emph{arXiv preprint arXiv:2306.05685}, 2023.
+
+\bibitem{textgrad2024}
+Mert Yuksekgonul, Federico Bianchi, Joseph Boen, Sheng Liu, Zhi Huang, Carlos Guestrin, and James Zou.
+\newblock TextGrad: Automatic ``Differentiation'' via Text.
+\newblock \emph{arXiv preprint arXiv:2406.07496}, 2024.
+
+\bibitem{guo2023evoprompt}
+Qingyan Guo, Rui Wang, Junliang Guo, Bei Li, Kaitao Song, Xu Tan, Guoqing Liu, Jiang Bian, and Yujiu Yang.
+\newblock Connecting Large Language Models with Evolutionary Algorithms Yields Powerful Prompt Optimizers.
+\newblock \emph{arXiv preprint arXiv:2309.08532}, 2023.
+
+\bibitem{agrawal2025gepa}
+Lakshya A. Agrawal et al.
+\newblock GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning.
+\newblock \emph{arXiv preprint arXiv:2507.19457}, 2025.
+
+\bibitem{novikov2025alphaevolve}
+Alexander Novikov et al.
+\newblock AlphaEvolve: A Coding Agent for Scientific and Algorithmic Discovery.
+\newblock \emph{arXiv preprint arXiv:2506.13131}, 2025.
+
+\end{thebibliography}
+
+\end{document}
